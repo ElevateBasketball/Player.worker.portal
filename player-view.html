@@ -376,10 +376,27 @@ async function dbSave(){
       if(cur.state){var s=cur.state;if(Array.isArray(s.workers)&&!cur.workers)cur.workers=s.workers;if(Array.isArray(s.players)&&!cur.players)cur.players=s.players;if(Array.isArray(s.sessions)&&!cur.sessions)cur.sessions=s.sessions;if(s.workerAvail&&!cur.workerAvail)cur.workerAvail=s.workerAvail;if(s.playerAvail&&!cur.playerAvail)cur.playerAvail=s.playerAvail;if(s.locations&&!cur.locations)cur.locations=s.locations;if(s.dayNotes&&!cur.dayNotes)cur.dayNotes=s.dayNotes;delete cur.state;}
     }
   }catch(e){}
-  // Only update player-related fields
-  cur.players=state.players;
-  cur.playerAvail=state.playerAvail;
-  // weekOffset not saved from player portal
+  // Merge only THIS player's own record into the freshly-fetched player list.
+  // Overwriting the whole array with our local copy would silently wipe out
+  // any other player's registration/edits saved in between our page load and now.
+  var freshPlayers=Array.isArray(cur.players)?cur.players.slice():[];
+  var mine=state.players.find(function(p){return p.id===selPlayer});
+  if(mine){
+    var pIdx=freshPlayers.findIndex(function(p){return p.id===mine.id});
+    if(pIdx>=0)freshPlayers[pIdx]=mine;else freshPlayers.push(mine);
+  }
+  cur.players=freshPlayers;
+  state.players=freshPlayers;
+
+  // Merge only THIS player's own availability keys into the fresh availability
+  // object, for the same reason — don't stomp other players' concurrent saves.
+  var freshAvail=Object.assign({},cur.playerAvail||{});
+  Object.keys(state.playerAvail).forEach(function(k){
+    if(k.indexOf(selPlayer)>=0)freshAvail[k]=state.playerAvail[k];
+  });
+  cur.playerAvail=freshAvail;
+  state.playerAvail=freshAvail;
+
   var r=await fetch(SBU+'/rest/v1/state?id=eq.main',{
     method:'PATCH',headers:Object.assign({},HDR,{'Prefer':'return=minimal'}),
     body:JSON.stringify({data:cur,updated_at:new Date().toISOString()})
@@ -461,22 +478,11 @@ function renderAvail(){
         +'</div>'
       :'<button class="btn" style="margin-bottom:14px;border-color:#7a1a1a;color:#f07070;padding:11px" onclick="togUnavailWeek()">&#128683; Mark unavailable this week</button>'
     )
-    +'<div style="background:#1a1a1a;border:1px solid #2e2e2e;border-radius:10px;padding:12px 14px;margin-bottom:14px">'
-    +'<div style="font-size:13px;font-weight:500;margin-bottom:10px">Sessions requested this week</div>'
-    +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
-    +'<div><div style="font-size:12px;color:#7ab8f0;font-weight:500">Individual</div><div style="font-size:10px;color:#666">1-on-1 sessions</div></div>'
-    +'<div style="display:flex;align-items:center;gap:8px">'
-    +'<button onclick="adjSessCount(-1,\'ind\')" style="width:28px;height:28px;border-radius:50%;border:1px solid #3a3a3a;background:transparent;color:#e8e8e8;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">&#8722;</button>'
-    +'<span id="sess-count-ind" style="font-size:18px;font-weight:700;min-width:24px;text-align:center">'+(state.playerAvail['sesscountind-'+selPlayer+'-'+availWkOff]||0)+'</span>'
-    +'<button onclick="adjSessCount(1,\'ind\')" style="width:28px;height:28px;border-radius:50%;border:1px solid #3a3a3a;background:transparent;color:#e8e8e8;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">&#43;</button>'
-    +'</div></div>'
-    +'<div style="display:flex;align-items:center;justify-content:space-between">'
-    +'<div><div style="font-size:12px;color:#60c070;font-weight:500">Group</div><div style="font-size:10px;color:#666">Group sessions</div></div>'
-    +'<div style="display:flex;align-items:center;gap:8px">'
-    +'<button onclick="adjSessCount(-1,\'grp\')" style="width:28px;height:28px;border-radius:50%;border:1px solid #3a3a3a;background:transparent;color:#e8e8e8;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">&#8722;</button>'
-    +'<span id="sess-count-grp" style="font-size:18px;font-weight:700;min-width:24px;text-align:center">'+(state.playerAvail['sesscountgrp-'+selPlayer+'-'+availWkOff]||0)+'</span>'
-    +'<button onclick="adjSessCount(1,\'grp\')" style="width:28px;height:28px;border-radius:50%;border:1px solid #3a3a3a;background:transparent;color:#e8e8e8;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">&#43;</button>'
-    +'</div></div></div>';
+    +(!isUnavail?'<div style="display:flex;gap:8px;margin-bottom:12px">'
+      +'<button class="btn btn-sm" style="flex:1" onclick="markAllDays(true)">Select all days</button>'
+      +'<button class="btn btn-sm" style="flex:1" onclick="markAllDays(false)">Clear all days</button>'
+      +'</div>':'')
+    ;
   DAYS.forEach(function(day,i){
     var k=selPlayer+'-'+day+'-'+availWkOff;
     var isOn=!!state.playerAvail[k];
@@ -532,6 +538,21 @@ function togAvailDay(day){
   renderAvail();
 }
 
+function markAllDays(on){
+  if(!selPlayer)return;
+  var swo=wkOff;
+  var dates=getWkDatesFor(swo);
+  var today=new Date();today.setHours(0,0,0,0);
+  DAYS.forEach(function(day,i){
+    if(dates[i]<today)return; // don't touch locked/past days
+    state.playerAvail[selPlayer+'-'+day+'-'+swo]=on;
+  });
+  var btn=document.querySelector('#tab-avail .btn-p');
+  if(btn){btn.textContent='Save availability';btn.style.background='';btn.style.borderColor='';btn.style.color='';}
+  var banner=document.querySelector('.avail-saved-banner');if(banner)banner.remove();
+  renderAvail();
+}
+
 function saveTimeLocal(day){
   var swo=wkOff;
   var fEl=document.getElementById('from-'+day);var tEl=document.getElementById('to-'+day);
@@ -539,34 +560,8 @@ function saveTimeLocal(day){
   if(tEl)state.playerAvail[selPlayer+'-'+day+'-'+swo+'-to']=tEl.value;
 }
 
-function adjSessCount(delta,type){
-  var availWkOff=wkOff;
-  var key=(type==='grp'?'sesscountgrp':'sesscountind')+'-'+selPlayer+'-'+availWkOff;
-  var cur=parseInt(state.playerAvail[key])||0;
-  var next=Math.max(0,Math.min(10,cur+delta));
-  state.playerAvail[key]=next;
-  // Also update legacy sesscount as total for backwards compat
-  var ind=parseInt(state.playerAvail['sesscountind-'+selPlayer+'-'+availWkOff])||0;
-  var grp=parseInt(state.playerAvail['sesscountgrp-'+selPlayer+'-'+availWkOff])||0;
-  state.playerAvail['sesscount-'+selPlayer+'-'+availWkOff]=ind+grp;
-  var el=document.getElementById('sess-count-'+(type==='grp'?'grp':'ind'));if(el)el.textContent=next;
-  var btn=document.querySelector('#tab-avail .btn-p');
-  if(btn){btn.textContent='Save availability';btn.style.background='';btn.style.borderColor='';btn.style.color='';}
-  var banner=document.querySelector('.avail-saved-banner');if(banner)banner.remove();
-}
-
 async function saveAvail(){
   var availWkOff=wkOff;
-  var isUnavail=!!state.playerAvail[selPlayer+'-unavail-'+availWkOff];
-  var indCount=parseInt(state.playerAvail['sesscountind-'+selPlayer+'-'+availWkOff])||0;
-  var grpCount=parseInt(state.playerAvail['sesscountgrp-'+selPlayer+'-'+availWkOff])||0;
-  var legacy=parseInt(state.playerAvail['sesscount-'+selPlayer+'-'+availWkOff])||0;
-  var sessCount=indCount+grpCount||legacy;
-  if(!isUnavail&&sessCount===0){
-    var flash=document.getElementById('avail-flash');
-    if(flash){flash.textContent='\u26A0 Please set how many sessions you want this week before saving.';flash.style.color='#f07070';}
-    return;
-  }
   var noteEl=document.getElementById('avail-note');
   if(noteEl)state.playerAvail['note-'+selPlayer+'-'+availWkOff]=noteEl.value.trim();
   var btn=document.querySelector('#tab-avail .btn-p');

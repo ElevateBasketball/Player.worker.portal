@@ -308,8 +308,27 @@ async function dbSave(){
       if(cur.state){var s=cur.state;if(Array.isArray(s.workers)&&s.workers.length>0&&!(cur.workers&&cur.workers.length>0))cur.workers=s.workers;delete cur.state;}
     }
   }catch(e){}
-  cur.workers=state.workers;
-  cur.workerAvail=state.workerAvail;
+  // Merge only THIS worker's own record into the freshly-fetched worker list.
+  // Overwriting the whole array with our local copy would silently wipe out
+  // any other worker's registration/edits saved in between our page load and now.
+  var freshWorkers=Array.isArray(cur.workers)?cur.workers.slice():[];
+  var mine=state.workers.find(function(w){return w.id===selWorker});
+  if(mine){
+    var wIdx=freshWorkers.findIndex(function(w){return w.id===mine.id});
+    if(wIdx>=0)freshWorkers[wIdx]=mine;else freshWorkers.push(mine);
+  }
+  cur.workers=freshWorkers;
+  state.workers=freshWorkers;
+
+  // Merge only THIS worker's own availability keys into the fresh availability
+  // object, for the same reason — don't stomp other workers' concurrent saves.
+  var freshAvail=Object.assign({},cur.workerAvail||{});
+  Object.keys(state.workerAvail).forEach(function(k){
+    if(k.indexOf(selWorker)>=0)freshAvail[k]=state.workerAvail[k];
+  });
+  cur.workerAvail=freshAvail;
+  state.workerAvail=freshAvail;
+
   var r=await fetch(SBU+'/rest/v1/state?id=eq.main',{
     method:'PATCH',headers:Object.assign({},HDR,{'Prefer':'return=minimal'}),
     body:JSON.stringify({data:cur,updated_at:new Date().toISOString()})
@@ -460,7 +479,11 @@ function renderAvail(){
 
   html+='<div class="card-title">My availability</div>'
     +'<p style="font-size:12px;color:#999;margin-bottom:12px">Tap a day to mark yourself available. Set times if you have a specific window.</p>'
-    +(dates.some(function(d){var t=new Date();t.setHours(0,0,0,0);return d<t;})?'<div style="font-size:12px;color:#666;background:#1a1a1a;border:1px solid #2e2e2e;border-radius:8px;padding:8px 12px;margin-bottom:12px">&#128337; Availability is for upcoming days only — past dates are locked.</div>':'');
+    +(dates.some(function(d){var t=new Date();t.setHours(0,0,0,0);return d<t;})?'<div style="font-size:12px;color:#666;background:#1a1a1a;border:1px solid #2e2e2e;border-radius:8px;padding:8px 12px;margin-bottom:12px">&#128337; Availability is for upcoming days only — past dates are locked.</div>':'')
+    +(!isUnavail?'<div style="display:flex;gap:8px;margin-bottom:12px">'
+      +'<button class="btn btn-sm" style="flex:1" onclick="markAllDays(true)">Select all days</button>'
+      +'<button class="btn btn-sm" style="flex:1" onclick="markAllDays(false)">Clear all days</button>'
+      +'</div>':'');
 
   DAYS.forEach(function(day,i){
     var k=selWorker+'-'+day+'-'+availWkOff;var isOn=!!state.workerAvail[k];
@@ -506,6 +529,21 @@ function togAvailDay(day){
   if(!selWorker)return;
   var swo=wkOff;
   var k=selWorker+'-'+day+'-'+swo;state.workerAvail[k]=!state.workerAvail[k];
+  var btn=document.querySelector('#tab-avail .btn-p');
+  if(btn){btn.textContent='Save availability';btn.style.background='';btn.style.borderColor='';btn.style.color='';}
+  var banner=document.querySelector('.avail-saved-banner');if(banner)banner.remove();
+  renderAvail();
+}
+
+function markAllDays(on){
+  if(!selWorker)return;
+  var swo=wkOff;
+  var dates=getWkDatesFor(swo);
+  var today=new Date();today.setHours(0,0,0,0);
+  DAYS.forEach(function(day,i){
+    if(dates[i]<today)return; // don't touch locked/past days
+    state.workerAvail[selWorker+'-'+day+'-'+swo]=on;
+  });
   var btn=document.querySelector('#tab-avail .btn-p');
   if(btn){btn.textContent='Save availability';btn.style.background='';btn.style.borderColor='';btn.style.color='';}
   var banner=document.querySelector('.avail-saved-banner');if(banner)banner.remove();
