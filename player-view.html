@@ -405,7 +405,9 @@ async function dbSave(){
 }
 
 function wkSessions(wo){
-  return state.sessions.filter(function(s){return s.week===wo&&s.status==='confirmed'});
+  var owned=state.sessions.filter(function(s){return s.week===wo});
+  var rec=state.sessions.filter(function(s){return s.recurring&&s.week!==wo&&!state.sessions.find(function(x){return x.recurringFrom===s.id&&x.week===wo})});
+  return owned.concat(rec.map(function(s){return Object.assign({},s,{id:s.id+'_r'+wo,week:wo,recurringFrom:s.id,isRI:true})}));
 }
 
 function renderSessions(){
